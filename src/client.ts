@@ -17,6 +17,10 @@ export interface VikunjaClient {
   put<T = unknown>(path: string, body?: unknown): Promise<T>;
   post<T = unknown>(path: string, body?: unknown): Promise<T>;
   del<T = unknown>(path: string): Promise<T>;
+  /** PUT a multipart form (file uploads) and parse the JSON response. */
+  upload<T = unknown>(path: string, form: FormData): Promise<T>;
+  /** GET a binary resource (attachment download). */
+  download(path: string): Promise<{ data: Buffer; contentType: string | null }>;
 }
 
 export const ZERO_DATE = "0001-01-01T00:00:00Z";
@@ -30,7 +34,7 @@ export function normalizeDate(value: string | null | undefined): string | null {
 export function makeClient(baseUrl: string, token: string): VikunjaClient {
   const base = baseUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
 
-  async function request<T>(method: Method, path: string, body?: unknown, query?: Query): Promise<T> {
+  async function send(method: Method, path: string, init: RequestInit, query?: Query): Promise<Response> {
     const url = new URL(`${base}/api/v1${path}`);
     if (query) {
       for (const [k, v] of Object.entries(query)) {
@@ -40,13 +44,9 @@ export function makeClient(baseUrl: string, token: string): VikunjaClient {
     let res: Response;
     try {
       res = await fetch(url, {
+        ...init,
         method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        headers: { Authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
       });
     } catch (err) {
       throw new Error(`${method} ${path} failed: ${(err as Error).message}`);
@@ -62,9 +62,26 @@ export function makeClient(baseUrl: string, token: string): VikunjaClient {
       }
       throw new Error(`${method} ${path} → ${res.status}: ${detail}`);
     }
+    return res;
+  }
+
+  async function parseJson<T>(res: Response): Promise<T> {
     if (res.status === 204) return undefined as T;
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
+  }
+
+  async function request<T>(method: Method, path: string, body?: unknown, query?: Query): Promise<T> {
+    const res = await send(
+      method,
+      path,
+      {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      query,
+    );
+    return parseJson<T>(res);
   }
 
   return {
@@ -74,6 +91,12 @@ export function makeClient(baseUrl: string, token: string): VikunjaClient {
     put: (path, body) => request("PUT", path, body),
     post: (path, body) => request("POST", path, body),
     del: (path) => request("DELETE", path),
+    // fetch sets the multipart boundary itself, so no Content-Type here.
+    upload: async (path, form) => parseJson(await send("PUT", path, { headers: { Accept: "application/json" }, body: form })),
+    download: async (path) => {
+      const res = await send("GET", path, {});
+      return { data: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get("content-type") };
+    },
   };
 }
 

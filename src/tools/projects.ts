@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { VikunjaClient } from "../client.js";
-import { ok, guard } from "./_shared.js";
+import { ok, guard, frontendUrl } from "./_shared.js";
 
 export interface Project {
   id: number;
@@ -26,19 +26,6 @@ export function summarizeProject(p: Project, base: string) {
     archived: Boolean(p.is_archived),
     favorite: Boolean(p.is_favorite),
   };
-}
-
-let frontendBase: string | null = null;
-
-async function frontendUrl(vikunja: VikunjaClient): Promise<string> {
-  if (frontendBase) return frontendBase;
-  try {
-    const info = await vikunja.get<{ frontend_url?: string }>("/info");
-    frontendBase = (info.frontend_url || vikunja.baseUrl).replace(/\/+$/, "");
-  } catch {
-    frontendBase = vikunja.baseUrl;
-  }
-  return frontendBase;
 }
 
 export function registerProjectTools(server: McpServer, vikunja: VikunjaClient): void {

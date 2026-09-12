@@ -33,20 +33,39 @@ async function listTools(env) {
 const base = { VIKUNJA_URL: "http://127.0.0.1:9", VIKUNJA_API_TOKEN: "fake" };
 
 const tools = await listTools({ ...base, VIKUNJA_ALLOW_DELETE: "" });
-assert.deepEqual(tools, [
-  "complete_task",
-  "create_label",
-  "create_project",
-  "create_task",
-  "get_project",
-  "get_task",
-  "list_labels",
-  "list_projects",
-  "list_tasks",
-  "update_task",
-]);
+assert.deepEqual(
+  tools,
+  [
+    "add_task_comment",
+    "add_task_relation",
+    "complete_task",
+    "create_label",
+    "create_project",
+    "create_task",
+    "download_task_attachment",
+    "duplicate_task",
+    "find_users",
+    "get_current_user",
+    "get_project",
+    "get_task",
+    "list_kanban_buckets",
+    "list_labels",
+    "list_projects",
+    "list_task_attachments",
+    "list_task_comments",
+    "list_tasks",
+    "move_task_to_bucket",
+    "remove_task_relation",
+    "set_reaction",
+    "set_subscription",
+    "update_task",
+    "update_task_comment",
+    "upload_task_attachment",
+  ].sort(),
+);
 
+const deleteTools = ["delete_task", "delete_task_attachment", "delete_task_comment"];
 const withDelete = await listTools({ ...base, VIKUNJA_ALLOW_DELETE: "true" });
-assert.ok(withDelete.includes("delete_task"), "delete_task should appear with VIKUNJA_ALLOW_DELETE=true");
+assert.deepEqual(withDelete, [...tools, ...deleteTools].sort(), "delete tools should appear only with VIKUNJA_ALLOW_DELETE=true");
 
 console.log(`ok - ${tools.length} tools listed, delete gating works`);

@@ -5,6 +5,11 @@ import { loadConfig, configPath, PACKAGE_NAME, VERSION } from "./config.js";
 import { makeClient } from "./client.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerTaskTools } from "./tools/tasks.js";
+import { registerCommentTools } from "./tools/comments.js";
+import { registerAttachmentTools } from "./tools/attachments.js";
+import { registerRelationTools } from "./tools/relations.js";
+import { registerKanbanTools } from "./tools/kanban.js";
+import { registerUserTools } from "./tools/users.js";
 
 const [cmd, ...rest] = process.argv.slice(2);
 
@@ -52,6 +57,11 @@ async function runServer(): Promise<void> {
 
   registerProjectTools(server, vikunja);
   registerTaskTools(server, vikunja, { allowDelete: config.allowDelete, defaultProjectId: config.defaultProjectId });
+  registerCommentTools(server, vikunja, { allowDelete: config.allowDelete });
+  registerAttachmentTools(server, vikunja, { allowDelete: config.allowDelete });
+  registerRelationTools(server, vikunja);
+  registerKanbanTools(server, vikunja);
+  registerUserTools(server, vikunja);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

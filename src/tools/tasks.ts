@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { normalizeDate, type VikunjaClient } from "../client.js";
-import { ok, guard, stripUndefined } from "./_shared.js";
+import { normalizeDate, ZERO_DATE, type VikunjaClient } from "../client.js";
+import { ok, guard, stripUndefined, frontendUrl, summarizeUser, type User } from "./_shared.js";
+import { summarizeAttachment, type Attachment } from "./attachments.js";
+import { summarizeComment, type Comment } from "./comments.js";
 
 interface Label {
   id: number;
@@ -10,10 +12,16 @@ interface Label {
   description?: string;
 }
 
-interface User {
+interface Reminder {
+  reminder?: string;
+  relative_to?: string;
+  relative_period?: number;
+}
+
+interface TaskBucket {
   id: number;
-  username: string;
-  name?: string;
+  title: string;
+  project_view_id: number;
 }
 
 export interface Task {
@@ -27,29 +35,28 @@ export interface Task {
   end_date?: string;
   priority?: number;
   percent_done?: number;
+  hex_color?: string;
+  is_favorite?: boolean;
   project_id: number;
   labels?: Label[] | null;
   assignees?: User[] | null;
+  reminders?: Reminder[] | null;
+  related_tasks?: Record<string, Task[] | null> | null;
+  attachments?: Attachment[] | null;
+  cover_image_attachment_id?: number;
+  subscription?: { entity: string | number; entity_id: number } | null;
+  buckets?: TaskBucket[] | null;
+  created_by?: User | null;
   created?: string;
   updated?: string;
   identifier?: string;
   repeat_after?: number;
+  repeat_mode?: number;
   bucket_id?: number;
 }
 
-let frontendBase: string | null = null;
-
-/** Resolve the web UI base URL once (Vikunja's API host may differ from its frontend host). */
-async function frontendUrl(vikunja: VikunjaClient): Promise<string> {
-  if (frontendBase) return frontendBase;
-  try {
-    const info = await vikunja.get<{ frontend_url?: string }>("/info");
-    frontendBase = (info.frontend_url || vikunja.baseUrl).replace(/\/+$/, "");
-  } catch {
-    frontendBase = vikunja.baseUrl;
-  }
-  return frontendBase;
-}
+/** Index = Vikunja's numeric repeat_mode. */
+const REPEAT_MODES = ["default", "monthly", "fromCurrentDate"] as const;
 
 function summarizeTask(t: Task, base: string) {
   return {
@@ -75,11 +82,41 @@ function fullTask(t: Task, base: string) {
     startDate: normalizeDate(t.start_date),
     endDate: normalizeDate(t.end_date),
     percentDone: t.percent_done ?? 0,
-    repeatAfterSeconds: t.repeat_after || null,
+    color: t.hex_color || null,
+    favorite: Boolean(t.is_favorite),
+    repeat:
+      t.repeat_after || t.repeat_mode
+        ? { afterSeconds: t.repeat_after || 0, mode: REPEAT_MODES[t.repeat_mode ?? 0] ?? "default" }
+        : null,
+    reminders: (t.reminders ?? []).map((r) =>
+      r.relative_to
+        ? { relativeTo: r.relative_to, relativePeriodSeconds: r.relative_period ?? 0, reminder: normalizeDate(r.reminder) }
+        : { reminder: normalizeDate(r.reminder) },
+    ),
     labels: (t.labels ?? []).map((l) => ({ id: l.id, title: l.title, color: l.hex_color || null })),
-    assignees: (t.assignees ?? []).map((u) => ({ id: u.id, username: u.username, name: u.name || null })),
+    assignees: (t.assignees ?? []).map((u) => summarizeUser(u)),
+    subscription: t.subscription ? { entity: t.subscription.entity, entityId: t.subscription.entity_id } : null,
+    relatedTasks: Object.fromEntries(
+      Object.entries(t.related_tasks ?? {}).map(([kind, tasks]) => [
+        kind,
+        (tasks ?? []).map((r) => ({ id: r.id, title: r.title, done: r.done, projectId: r.project_id, url: `${base}/tasks/${r.id}` })),
+      ]),
+    ),
+    attachments: (t.attachments ?? []).map(summarizeAttachment),
+    coverImageAttachmentId: t.cover_image_attachment_id || null,
+    kanbanBuckets: t.buckets ? t.buckets.map((b) => ({ id: b.id, title: b.title, viewId: b.project_view_id })) : undefined,
+    createdBy: summarizeUser(t.created_by),
     created: t.created,
   };
+}
+
+/** Fetch one task including its kanban buckets; falls back for Vikunja versions without `expand`. */
+async function fetchTask(vikunja: VikunjaClient, id: number): Promise<Task> {
+  try {
+    return await vikunja.get<Task>(`/tasks/${id}`, { expand: "buckets" });
+  } catch {
+    return vikunja.get<Task>(`/tasks/${id}`);
+  }
 }
 
 const dateField = z
@@ -94,9 +131,83 @@ const priorityField = z
   .max(5)
   .describe("0 = unset, 1 = low, 2 = medium, 3 = high, 4 = urgent, 5 = DO NOW");
 
+const reminderField = z
+  .object({
+    reminder: dateField.optional().describe("Absolute reminder time"),
+    relativeTo: z.enum(["due_date", "start_date", "end_date"]).optional().describe("Date the reminder is relative to"),
+    relativePeriodSeconds: z
+      .number()
+      .int()
+      .optional()
+      .describe("Offset from relativeTo in seconds; negative = before (e.g. -3600 = one hour before)"),
+  })
+  .refine((r) => r.reminder !== undefined || r.relativeTo !== undefined, "Give either reminder or relativeTo");
+
+type ReminderInput = z.infer<typeof reminderField>;
+
+/** Fields shared by create_task and update_task beyond the basic ones. */
+const extraFields = {
+  percentDone: z.number().min(0).max(1).optional().describe("Progress as a fraction 0–1 (the UI uses 10% steps)"),
+  hexColor: z
+    .string()
+    .regex(/^#?([0-9a-fA-F]{6})?$/)
+    .optional()
+    .describe("Task colour as 6 hex digits, e.g. 1973ff; empty string removes the colour"),
+  isFavorite: z.boolean().optional().describe("Add to (true) or remove from (false) the current user's favorites"),
+  repeatAfterSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Repeat interval in seconds (3600 hourly, 86400 daily, 604800 weekly); 0 stops repeating"),
+  repeatMode: z
+    .enum(REPEAT_MODES)
+    .optional()
+    .describe(
+      "default = shift dates by repeatAfterSeconds when marked done; monthly = same day next month " +
+        "(ignores repeatAfterSeconds); fromCurrentDate = shift from the moment it is marked done",
+    ),
+  reminders: z.array(reminderField).optional().describe("REPLACES all reminders; [] removes them"),
+  labelIds: z.array(z.number().int()).optional().describe("Label ids (list_labels); REPLACES the task's labels"),
+  assigneeIds: z
+    .array(z.number().int())
+    .optional()
+    .describe("User ids (find_users / get_current_user); REPLACES the assignees, [] unassigns everyone"),
+};
+
+interface ExtraArgs {
+  percentDone?: number;
+  hexColor?: string;
+  isFavorite?: boolean;
+  repeatAfterSeconds?: number;
+  repeatMode?: (typeof REPEAT_MODES)[number];
+  reminders?: ReminderInput[];
+}
+
+function toApiReminder(r: ReminderInput): Reminder {
+  if (r.relativeTo) return { relative_to: r.relativeTo, relative_period: r.relativePeriodSeconds ?? 0 };
+  return { reminder: r.reminder };
+}
+
+function extraBody(a: ExtraArgs) {
+  return stripUndefined({
+    percent_done: a.percentDone,
+    hex_color: a.hexColor?.replace(/^#/, ""),
+    is_favorite: a.isFavorite,
+    repeat_after: a.repeatAfterSeconds,
+    repeat_mode: a.repeatMode === undefined ? undefined : REPEAT_MODES.indexOf(a.repeatMode),
+    reminders: a.reminders?.map(toApiReminder),
+  });
+}
+
 /** Replace the task's labels with exactly `labelIds` (Vikunja has no single-call "set labels"). */
 async function setLabels(vikunja: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
   await vikunja.post(`/tasks/${taskId}/labels/bulk`, { labels: labelIds.map((id) => ({ id })) });
+}
+
+/** Replace the task's assignees; users missing from the list are unassigned. */
+async function setAssignees(vikunja: VikunjaClient, taskId: number, userIds: number[]): Promise<void> {
+  await vikunja.post(`/tasks/${taskId}/assignees/bulk`, { assignees: userIds.map((id) => ({ id })) });
 }
 
 export interface TaskToolOptions {
@@ -161,12 +272,21 @@ export function registerTaskTools(
     "get_task",
     {
       title: "Get task",
-      description: "Get a single task with full details: description, dates, priority, labels and assignees.",
-      inputSchema: { id: z.number().int().describe("Task id") },
+      description:
+        "Get a single task with full details: description, dates, priority, progress, colour, favorite, repeat, " +
+        "reminders, labels, assignees, subscription, related tasks, attachments, kanban buckets and (by default) comments.",
+      inputSchema: {
+        id: z.number().int().describe("Task id"),
+        includeComments: z.boolean().default(true).describe("Also return the task's comments (oldest first)"),
+      },
     },
-    guard(async ({ id }) => {
-      const data = await vikunja.get<Task>(`/tasks/${id}`);
-      return ok(fullTask(data, await frontendUrl(vikunja)));
+    guard(async ({ id, includeComments }) => {
+      const [task, comments] = await Promise.all([
+        fetchTask(vikunja, id),
+        includeComments ? vikunja.get<Comment[] | null>(`/tasks/${id}/comments`) : Promise.resolve(undefined),
+      ]);
+      const result = fullTask(task, await frontendUrl(vikunja));
+      return ok(comments === undefined ? result : { ...result, comments: (comments ?? []).map(summarizeComment) });
     }),
   );
 
@@ -175,7 +295,8 @@ export function registerTaskTools(
     {
       title: "Create task",
       description:
-        "Create a task in a project. Use list_projects to find the projectId and list_labels for label ids." +
+        "Create a task in a project. Use list_projects for the projectId, list_labels for label ids and find_users " +
+        "for assignee ids. Descriptions are HTML." +
         (defaultProjectId != null ? ` If projectId is omitted, project ${defaultProjectId} is used.` : ""),
       inputSchema: {
         projectId:
@@ -183,28 +304,23 @@ export function registerTaskTools(
             ? z.number().int().default(defaultProjectId).describe("Project id")
             : z.number().int().describe("Project id"),
         title: z.string().min(1).describe("Task title"),
-        description: z.string().optional().describe("Task description (markdown/HTML accepted by Vikunja)"),
+        description: z.string().optional().describe("Task description (HTML)"),
         dueDate: dateField.optional(),
         startDate: dateField.optional(),
         endDate: dateField.optional(),
         priority: priorityField.optional(),
-        labelIds: z.array(z.number().int()).optional().describe("Label ids to attach"),
+        ...extraFields,
       },
     },
-    guard(async ({ projectId, title, description, dueDate, startDate, endDate, priority, labelIds }) => {
-      const body = stripUndefined({
-        title,
-        description,
-        due_date: dueDate,
-        start_date: startDate,
-        end_date: endDate,
-        priority,
-      });
+    guard(async ({ projectId, title, description, dueDate, startDate, endDate, priority, labelIds, assigneeIds, ...extra }) => {
+      const body = {
+        ...stripUndefined({ title, description, due_date: dueDate, start_date: startDate, end_date: endDate, priority }),
+        ...extraBody(extra),
+      };
       let task = await vikunja.put<Task>(`/projects/${projectId}/tasks`, body);
-      if (labelIds && labelIds.length > 0) {
-        await setLabels(vikunja, task.id, labelIds);
-        task = await vikunja.get<Task>(`/tasks/${task.id}`);
-      }
+      if (labelIds && labelIds.length > 0) await setLabels(vikunja, task.id, labelIds);
+      if (assigneeIds && assigneeIds.length > 0) await setAssignees(vikunja, task.id, assigneeIds);
+      if (labelIds?.length || assigneeIds?.length) task = await fetchTask(vikunja, task.id);
       return ok(fullTask(task, await frontendUrl(vikunja)));
     }),
   );
@@ -215,48 +331,47 @@ export function registerTaskTools(
       title: "Update task",
       description:
         "Update fields of an existing task. Only the fields you pass are changed. To clear a date pass null. " +
-        "labelIds, when given, REPLACES the task's labels. Use complete_task to just mark a task done.",
+        "labelIds, assigneeIds and reminders REPLACE the current values. projectId moves the task to another project. " +
+        "Use complete_task to just mark a task done.",
       inputSchema: {
         id: z.number().int().describe("Task id"),
         title: z.string().min(1).optional(),
-        description: z.string().optional(),
+        description: z.string().optional().describe("Task description (HTML)"),
         done: z.boolean().optional(),
         dueDate: dateField.nullable().optional(),
         startDate: dateField.nullable().optional(),
         endDate: dateField.nullable().optional(),
         priority: priorityField.optional(),
-        percentDone: z.number().min(0).max(1).optional().describe("Progress as a fraction 0–1"),
         projectId: z.number().int().optional().describe("Move the task to another project"),
-        labelIds: z.array(z.number().int()).optional().describe("Replace labels with these ids"),
+        ...extraFields,
       },
     },
-    guard(async ({ id, title, description, done, dueDate, startDate, endDate, priority, percentDone, projectId, labelIds }) => {
-      // Vikunja's POST /tasks/{id} replaces unspecified fields with zero values,
-      // so merge the patch onto the current task before sending.
-      const current = await vikunja.get<Task>(`/tasks/${id}`);
-      const patch = stripUndefined({
-        title,
-        description,
-        done,
-        due_date: dueDate === null ? "0001-01-01T00:00:00Z" : dueDate,
-        start_date: startDate === null ? "0001-01-01T00:00:00Z" : startDate,
-        end_date: endDate === null ? "0001-01-01T00:00:00Z" : endDate,
-        priority,
-        percent_done: percentDone,
-        project_id: projectId,
-      });
-      if (Object.keys(patch).length === 0 && labelIds === undefined) {
+    guard(async ({ id, title, description, done, dueDate, startDate, endDate, priority, projectId, labelIds, assigneeIds, ...extra }) => {
+      const patch = {
+        ...stripUndefined({
+          title,
+          description,
+          done,
+          due_date: dueDate === null ? ZERO_DATE : dueDate,
+          start_date: startDate === null ? ZERO_DATE : startDate,
+          end_date: endDate === null ? ZERO_DATE : endDate,
+          priority,
+          project_id: projectId,
+        }),
+        ...extraBody(extra),
+      };
+      if (Object.keys(patch).length === 0 && labelIds === undefined && assigneeIds === undefined) {
         throw new Error("Nothing to update.");
       }
-      let task = current;
       if (Object.keys(patch).length > 0) {
-        task = await vikunja.post<Task>(`/tasks/${id}`, { ...current, ...patch });
+        // Vikunja's POST /tasks/{id} replaces unspecified fields with zero values,
+        // so merge the patch onto the current task before sending.
+        const current = await vikunja.get<Task>(`/tasks/${id}`);
+        await vikunja.post<Task>(`/tasks/${id}`, { ...current, ...patch });
       }
-      if (labelIds !== undefined) {
-        await setLabels(vikunja, id, labelIds);
-        task = await vikunja.get<Task>(`/tasks/${id}`);
-      }
-      return ok(fullTask(task, await frontendUrl(vikunja)));
+      if (labelIds !== undefined) await setLabels(vikunja, id, labelIds);
+      if (assigneeIds !== undefined) await setAssignees(vikunja, id, assigneeIds);
+      return ok(fullTask(await fetchTask(vikunja, id), await frontendUrl(vikunja)));
     }),
   );
 
@@ -264,7 +379,7 @@ export function registerTaskTools(
     "complete_task",
     {
       title: "Complete task",
-      description: "Mark a task as done (or reopen it with done=false).",
+      description: "Mark a task as done (or undone / reopen it with done=false).",
       inputSchema: {
         id: z.number().int().describe("Task id"),
         done: z.boolean().default(true).describe("false to reopen a completed task"),
@@ -274,6 +389,55 @@ export function registerTaskTools(
       const current = await vikunja.get<Task>(`/tasks/${id}`);
       const task = await vikunja.post<Task>(`/tasks/${id}`, { ...current, done });
       return ok(summarizeTask(task, await frontendUrl(vikunja)));
+    }),
+  );
+
+  server.registerTool(
+    "duplicate_task",
+    {
+      title: "Duplicate task",
+      description:
+        "Copy a task with labels, assignees, attachments and reminders into the same project. " +
+        'The copy gets a "copiedfrom" relation to the original.',
+      inputSchema: { id: z.number().int().describe("Task id to duplicate") },
+    },
+    guard(async ({ id }) => {
+      const res = await vikunja.put<{ duplicated_task?: Task }>(`/tasks/${id}/duplicate`);
+      if (!res?.duplicated_task) throw new Error("Vikunja did not return the duplicated task.");
+      return ok(fullTask(res.duplicated_task, await frontendUrl(vikunja)));
+    }),
+  );
+
+  server.registerTool(
+    "set_subscription",
+    {
+      title: "Subscribe / unsubscribe",
+      description:
+        "Subscribe the current user to notifications for a task or project, or unsubscribe (subscribed=false). " +
+        "A task subscription may be inherited from its project; then unsubscribe from the project instead.",
+      inputSchema: {
+        entity: z.enum(["task", "project"]).default("task"),
+        id: z.number().int().describe("Task or project id"),
+        subscribed: z.boolean().default(true).describe("false to unsubscribe"),
+      },
+    },
+    guard(async ({ entity, id, subscribed }) => {
+      if (entity === "task") {
+        const task = await vikunja.get<Task>(`/tasks/${id}`);
+        const sub = task.subscription;
+        if (Boolean(sub) === subscribed) {
+          return ok({ entity, id, subscribed, changed: false, via: sub ? String(sub.entity) : null });
+        }
+        if (sub && String(sub.entity) !== "task") {
+          throw new Error(
+            `Task ${id} inherits its subscription from project ${task.project_id}; ` +
+              `unsubscribe with entity="project", id=${task.project_id}.`,
+          );
+        }
+      }
+      if (subscribed) await vikunja.put(`/subscriptions/${entity}/${id}`);
+      else await vikunja.del(`/subscriptions/${entity}/${id}`);
+      return ok({ entity, id, subscribed, changed: true });
     }),
   );
 
