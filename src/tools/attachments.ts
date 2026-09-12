@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { VikunjaClient } from "../client.js";
-import { ok, guard, summarizeUser, type User } from "./_shared.js";
+import { ok, guard, escapeHtml, summarizeUser, type User } from "./_shared.js";
 import type { Task } from "./tasks.js";
 
 export interface Attachment {
@@ -24,6 +24,60 @@ export function summarizeAttachment(a: Attachment) {
     size: a.file?.size ?? null,
     created: a.created,
     createdBy: summarizeUser(a.created_by),
+  };
+}
+
+export const filePathsField = z.array(z.string().min(1)).min(1).describe("Absolute paths of local files to upload");
+
+export interface UploadResult {
+  uploaded: Attachment[];
+  errors: string[];
+}
+
+/** Upload local files as task attachments. Throws only when every file failed. */
+export async function uploadAttachments(vikunja: VikunjaClient, taskId: number, filePaths: string[]): Promise<UploadResult> {
+  const form = new FormData();
+  for (const p of filePaths) {
+    const abs = path.resolve(p);
+    form.append("files", await fs.openAsBlob(abs), path.basename(abs));
+  }
+  const res = await vikunja.upload<{ success?: Attachment[] | null; errors?: { message?: string }[] | null }>(
+    `/tasks/${taskId}/attachments`,
+    form,
+  );
+  const uploaded = res?.success ?? [];
+  const errors = (res?.errors ?? []).map((e) => e.message ?? JSON.stringify(e));
+  if (errors.length > 0 && uploaded.length === 0) throw new Error(`Upload failed: ${errors.join("; ")}`);
+  return { uploaded, errors };
+}
+
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+
+/**
+ * Show attachments inside a description or comment the way the web editor does:
+ * images as `<img data-src>` (the UI fetches them with the viewer's token), other files by name.
+ * Vikunja has no comment-level attachments, so these are always task attachments.
+ */
+export function attachmentHtml(vikunja: VikunjaClient, taskId: number, attachments: Attachment[]): string {
+  if (attachments.length === 0) return "";
+  const parts = attachments.map((a) => {
+    const name = a.file?.name || `attachment-${a.id}`;
+    if (a.file?.mime?.startsWith("image/") || IMAGE_EXTENSIONS.test(name)) {
+      return `<img data-src="${vikunja.baseUrl}/api/v1/tasks/${taskId}/attachments/${a.id}" src="#" id="tiptap-image-${taskId}-${a.id}">`;
+    }
+    return `<p>📎 ${escapeHtml(name)} (attachment #${a.id})</p>`;
+  });
+  // The editor always leaves an empty paragraph after embedded content.
+  return parts.join("") + "<p></p>";
+}
+
+/** Add what was uploaded (and any per-file failures) to a tool result. */
+export function withUploadInfo<T extends object>(result: T, files: UploadResult | null) {
+  if (!files) return result;
+  return {
+    ...result,
+    uploaded: files.uploaded.map(summarizeAttachment),
+    ...(files.errors.length > 0 ? { uploadErrors: files.errors } : {}),
   };
 }
 
@@ -66,26 +120,17 @@ export function registerAttachmentTools(
     "upload_task_attachment",
     {
       title: "Upload task attachment",
-      description: "Attach one or more local files to a task.",
+      description:
+        "Attach one or more local files to a task. To also show them in a comment or the description, use filePaths on " +
+        "add_task_comment / update_task_comment or descriptionFilePaths on create_task / update_task instead.",
       inputSchema: {
         taskId: z.number().int().describe("Task id"),
-        filePaths: z.array(z.string().min(1)).min(1).describe("Absolute paths of local files to upload"),
+        filePaths: filePathsField,
       },
     },
     guard(async ({ taskId, filePaths }) => {
-      const form = new FormData();
-      for (const p of filePaths) {
-        const abs = path.resolve(p);
-        form.append("files", await fs.openAsBlob(abs), path.basename(abs));
-      }
-      const res = await vikunja.upload<{ success?: Attachment[] | null; errors?: { message?: string }[] | null }>(
-        `/tasks/${taskId}/attachments`,
-        form,
-      );
-      const uploaded = (res?.success ?? []).map(summarizeAttachment);
-      const errors = (res?.errors ?? []).map((e) => e.message ?? JSON.stringify(e));
-      if (errors.length > 0 && uploaded.length === 0) throw new Error(`Upload failed: ${errors.join("; ")}`);
-      return ok({ uploaded, errors });
+      const { uploaded, errors } = await uploadAttachments(vikunja, taskId, filePaths);
+      return ok({ uploaded: uploaded.map(summarizeAttachment), errors });
     }),
   );
 

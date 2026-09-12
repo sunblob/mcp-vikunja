@@ -57,11 +57,14 @@ export async function frontendUrl(vikunja: VikunjaClient): Promise<string> {
  */
 export function toHtml(text: string): string {
   if (/<\/?[a-z][\s\S]*>/i.test(text)) return text;
-  const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return text
     .split(/\n{2,}/)
-    .map((para) => `<p>${escape(para).replace(/\n/g, "<br>")}</p>`)
+    .map((para) => `<p>${escapeHtml(para).replace(/\n/g, "<br>")}</p>`)
     .join("");
+}
+
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /** Reaction map `{ "👍": [users] }` → `{ "👍": ["alice"] }`, or null when empty. */

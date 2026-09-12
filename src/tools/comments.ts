@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { VikunjaClient } from "../client.js";
 import { ok, guard, toHtml, summarizeUser, summarizeReactions, type User } from "./_shared.js";
+import { uploadAttachments, attachmentHtml, withUploadInfo, filePathsField } from "./attachments.js";
 
 export interface Comment {
   id: number;
@@ -29,6 +30,10 @@ const commentText = z
   .min(1)
   .describe("Comment body. HTML is sent as-is; plain text is wrapped in <p> (blank line = new paragraph)");
 
+const commentFiles = filePathsField.describe(
+  "Absolute paths of local files to upload as task attachments and show in the comment: images inline, other files by name",
+);
+
 export function registerCommentTools(
   server: McpServer,
   vikunja: VikunjaClient,
@@ -54,12 +59,21 @@ export function registerCommentTools(
     "add_task_comment",
     {
       title: "Add task comment",
-      description: "Post a comment on a task as the current user. Visible to everyone with access to the task.",
-      inputSchema: { taskId: z.number().int().describe("Task id"), comment: commentText },
+      description:
+        "Post a comment on a task as the current user, optionally with files shown in it. " +
+        "Visible to everyone with access to the task.",
+      inputSchema: {
+        taskId: z.number().int().describe("Task id"),
+        comment: commentText.optional(),
+        filePaths: commentFiles.optional(),
+      },
     },
-    guard(async ({ taskId, comment }) => {
-      const data = await vikunja.put<Comment>(`/tasks/${taskId}/comments`, { comment: toHtml(comment) });
-      return ok(summarizeComment(data));
+    guard(async ({ taskId, comment, filePaths }) => {
+      if (!comment && !filePaths) throw new Error("Pass comment, filePaths, or both.");
+      const files = filePaths ? await uploadAttachments(vikunja, taskId, filePaths) : null;
+      const body = (comment ? toHtml(comment) : "") + (files ? attachmentHtml(vikunja, taskId, files.uploaded) : "");
+      const data = await vikunja.put<Comment>(`/tasks/${taskId}/comments`, { comment: body });
+      return ok(withUploadInfo(summarizeComment(data), files));
     }),
   );
 
@@ -67,16 +81,24 @@ export function registerCommentTools(
     "update_task_comment",
     {
       title: "Edit task comment",
-      description: "Replace the text of an existing comment.",
+      description:
+        "Replace the text of an existing comment and/or add files to it. filePaths without comment keeps the current text.",
       inputSchema: {
         taskId: z.number().int().describe("Task id"),
         commentId: z.number().int().describe("Comment id"),
-        comment: commentText,
+        comment: commentText.optional(),
+        filePaths: commentFiles.optional(),
       },
     },
-    guard(async ({ taskId, commentId, comment }) => {
-      const data = await vikunja.post<Comment>(`/tasks/${taskId}/comments/${commentId}`, { comment: toHtml(comment) });
-      return ok(summarizeComment(data));
+    guard(async ({ taskId, commentId, comment, filePaths }) => {
+      if (!comment && !filePaths) throw new Error("Pass comment, filePaths, or both.");
+      const text = comment
+        ? toHtml(comment)
+        : ((await vikunja.get<Comment>(`/tasks/${taskId}/comments/${commentId}`)).comment ?? "");
+      const files = filePaths ? await uploadAttachments(vikunja, taskId, filePaths) : null;
+      const body = text + (files ? attachmentHtml(vikunja, taskId, files.uploaded) : "");
+      const data = await vikunja.post<Comment>(`/tasks/${taskId}/comments/${commentId}`, { comment: body });
+      return ok(withUploadInfo(summarizeComment(data), files));
     }),
   );
 

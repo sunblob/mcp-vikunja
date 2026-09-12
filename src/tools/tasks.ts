@@ -2,7 +2,15 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { normalizeDate, ZERO_DATE, type VikunjaClient } from "../client.js";
 import { ok, guard, stripUndefined, frontendUrl, summarizeUser, type User } from "./_shared.js";
-import { summarizeAttachment, type Attachment } from "./attachments.js";
+import {
+  summarizeAttachment,
+  uploadAttachments,
+  attachmentHtml,
+  withUploadInfo,
+  filePathsField,
+  type Attachment,
+  type UploadResult,
+} from "./attachments.js";
 import { summarizeComment, type Comment } from "./comments.js";
 
 interface Label {
@@ -173,6 +181,12 @@ const extraFields = {
     .array(z.number().int())
     .optional()
     .describe("User ids (find_users / get_current_user); REPLACES the assignees, [] unassigns everyone"),
+  descriptionFilePaths: filePathsField
+    .optional()
+    .describe(
+      "Absolute paths of local files to upload as task attachments and show at the end of the description: " +
+        "images inline, other files by name",
+    ),
 };
 
 interface ExtraArgs {
@@ -312,7 +326,7 @@ export function registerTaskTools(
         ...extraFields,
       },
     },
-    guard(async ({ projectId, title, description, dueDate, startDate, endDate, priority, labelIds, assigneeIds, ...extra }) => {
+    guard(async ({ projectId, title, description, dueDate, startDate, endDate, priority, labelIds, assigneeIds, descriptionFilePaths, ...extra }) => {
       const body = {
         ...stripUndefined({ title, description, due_date: dueDate, start_date: startDate, end_date: endDate, priority }),
         ...extraBody(extra),
@@ -320,8 +334,18 @@ export function registerTaskTools(
       let task = await vikunja.put<Task>(`/projects/${projectId}/tasks`, body);
       if (labelIds && labelIds.length > 0) await setLabels(vikunja, task.id, labelIds);
       if (assigneeIds && assigneeIds.length > 0) await setAssignees(vikunja, task.id, assigneeIds);
-      if (labelIds?.length || assigneeIds?.length) task = await fetchTask(vikunja, task.id);
-      return ok(fullTask(task, await frontendUrl(vikunja)));
+      let files: UploadResult | null = null;
+      if (descriptionFilePaths) {
+        // Attachments need the task id, so they are embedded with a second update.
+        files = await uploadAttachments(vikunja, task.id, descriptionFilePaths);
+        const current = await vikunja.get<Task>(`/tasks/${task.id}`);
+        await vikunja.post<Task>(`/tasks/${task.id}`, {
+          ...current,
+          description: (current.description || "") + attachmentHtml(vikunja, task.id, files.uploaded),
+        });
+      }
+      if (labelIds?.length || assigneeIds?.length || files) task = await fetchTask(vikunja, task.id);
+      return ok(withUploadInfo(fullTask(task, await frontendUrl(vikunja)), files));
     }),
   );
 
@@ -346,7 +370,7 @@ export function registerTaskTools(
         ...extraFields,
       },
     },
-    guard(async ({ id, title, description, done, dueDate, startDate, endDate, priority, projectId, labelIds, assigneeIds, ...extra }) => {
+    guard(async ({ id, title, description, done, dueDate, startDate, endDate, priority, projectId, labelIds, assigneeIds, descriptionFilePaths, ...extra }) => {
       const patch = {
         ...stripUndefined({
           title,
@@ -360,18 +384,23 @@ export function registerTaskTools(
         }),
         ...extraBody(extra),
       };
-      if (Object.keys(patch).length === 0 && labelIds === undefined && assigneeIds === undefined) {
+      if (Object.keys(patch).length === 0 && !descriptionFilePaths && labelIds === undefined && assigneeIds === undefined) {
         throw new Error("Nothing to update.");
       }
-      if (Object.keys(patch).length > 0) {
+      let files: UploadResult | null = null;
+      if (Object.keys(patch).length > 0 || descriptionFilePaths) {
         // Vikunja's POST /tasks/{id} replaces unspecified fields with zero values,
         // so merge the patch onto the current task before sending.
         const current = await vikunja.get<Task>(`/tasks/${id}`);
+        if (descriptionFilePaths) {
+          files = await uploadAttachments(vikunja, id, descriptionFilePaths);
+          patch.description = (description ?? current.description ?? "") + attachmentHtml(vikunja, id, files.uploaded);
+        }
         await vikunja.post<Task>(`/tasks/${id}`, { ...current, ...patch });
       }
       if (labelIds !== undefined) await setLabels(vikunja, id, labelIds);
       if (assigneeIds !== undefined) await setAssignees(vikunja, id, assigneeIds);
-      return ok(fullTask(await fetchTask(vikunja, id), await frontendUrl(vikunja)));
+      return ok(withUploadInfo(fullTask(await fetchTask(vikunja, id), await frontendUrl(vikunja)), files));
     }),
   );
 
