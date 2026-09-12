@@ -47,6 +47,7 @@ function summarizeTask(t: Task) {
     projectId: t.project_id,
     identifier: t.identifier || null,
     labels: (t.labels ?? []).map((l) => l.title),
+    assignees: (t.assignees ?? []).map((u) => u.username),
     updated: t.updated,
   };
 }
@@ -98,12 +99,14 @@ export function registerTaskTools(
     {
       title: "List tasks",
       description:
-        "List tasks, across all projects or within one project. Returns id, title, done, due date, priority and label " +
-        "names (no descriptions — use get_task). By default only open tasks are returned. For advanced queries pass a " +
-        "raw Vikunja `filter` string such as `done = false && due_date < now+7d` or `labels in 3, 5`.",
+        "List tasks, across all projects or within one project. Returns id, title, done, due date, priority, label " +
+        "names and assignee usernames (no descriptions — use get_task). By default only open tasks are returned. " +
+        "Set assignedToMe=true for the current user's tasks. For advanced queries pass a raw Vikunja `filter` string " +
+        "such as `done = false && due_date < now+7d`, `labels in 3, 5` or `assignees in alice`.",
       inputSchema: {
         projectId: z.number().int().optional().describe("Limit to this project (omit for all projects)"),
         includeDone: z.boolean().default(false).describe("Include completed tasks"),
+        assignedToMe: z.boolean().default(false).describe("Only tasks assigned to the authenticated user"),
         search: z.string().optional().describe("Full-text search in title/description"),
         filter: z
           .string()
@@ -115,9 +118,17 @@ export function registerTaskTools(
         perPage: z.number().int().min(1).max(100).default(50),
       },
     },
-    guard(async ({ projectId, includeDone, search, filter, sortBy, orderBy, page, perPage }) => {
-      const effectiveFilter = filter ?? (includeDone ? undefined : "done = false");
-      const path = projectId != null ? `/projects/${projectId}/tasks` : "/tasks/all";
+    guard(async ({ projectId, includeDone, assignedToMe, search, filter, sortBy, orderBy, page, perPage }) => {
+      const clauses: string[] = [];
+      if (filter) clauses.push(`(${filter})`);
+      else if (!includeDone) clauses.push("done = false");
+      if (assignedToMe) {
+        const me = await vikunja.get<{ username: string }>("/user");
+        clauses.push(`assignees in '${me.username}'`);
+      }
+      const effectiveFilter = clauses.length > 0 ? clauses.join(" && ") : undefined;
+      // Vikunja >= 1.0 serves cross-project tasks at /tasks (the old /tasks/all returns 400).
+      const path = projectId != null ? `/projects/${projectId}/tasks` : "/tasks";
       const data = await vikunja.get<Task[]>(path, {
         s: search,
         filter: effectiveFilter,

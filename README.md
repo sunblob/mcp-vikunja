@@ -88,7 +88,7 @@ VIKUNJA_API_TOKEN = "tk_..."
 | `list_projects` | `GET /projects` | id, title, description, parent |
 | `get_project` | `GET /projects/{id}` | |
 | `create_project` | `PUT /projects` | optional parent project |
-| `list_tasks` | `GET /tasks/all` or `GET /projects/{id}/tasks` | open tasks by default; `filter`, `sortBy`, pagination |
+| `list_tasks` | `GET /tasks` or `GET /projects/{id}/tasks` | open tasks by default; `assignedToMe`, `filter`, `sortBy`, pagination |
 | `get_task` | `GET /tasks/{id}` | full task incl. description, labels, assignees |
 | `create_task` | `PUT /projects/{id}/tasks` | title, description, dates, priority, labels |
 | `update_task` | `POST /tasks/{id}` | merges your changes onto the current task; `labelIds` replaces labels |
