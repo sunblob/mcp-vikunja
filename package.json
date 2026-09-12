@@ -1,6 +1,6 @@
 {
   "name": "@fswap/mcp-vikunja",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "MCP server for Vikunja — list, create, update and complete tasks from Claude",
   "type": "module",
   "bin": {
