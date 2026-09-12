@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [18, 20, 22, 24]
+        node: [22, 24] # tsdown needs >= 22.18; runtime supports >= 20.12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
