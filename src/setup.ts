@@ -9,8 +9,13 @@ function abort(): never {
   process.exit(1);
 }
 
+/** Plain stdout, no box drawing, so the snippets can be selected and copied (or piped to a file). */
 function printSnippets(missing: MissingEnv): void {
-  for (const s of clientSnippets(missing)) p.note(s.body, s.title);
+  for (const s of clientSnippets(missing)) {
+    console.log(`\n# ${s.title}\n`);
+    console.log(s.body);
+  }
+  console.log();
 }
 
 export async function runSetup(args: string[] = []): Promise<void> {
@@ -107,6 +112,7 @@ export async function runSetup(args: string[] = []): Promise<void> {
       `Still needed: ${Object.keys(missing).join(", ")}. Add them to the env block below, or run setup again.`,
     );
   }
-  printSnippets(missing);
   p.outro(`Saved to ${file}`);
+  console.log("Add one of these to your MCP client (plain text, safe to copy). Re-print any time with: setup --print");
+  printSnippets(missing);
 }
