@@ -10,7 +10,7 @@ Runs locally over stdio. No install step — clients launch it with `npx`.
 2. Run the interactive setup once:
 
    ```bash
-   npx -y @fswap/mcp-vikunja setup
+   npx -y @fswap/mcp-vikunja@latest setup
    ```
 
    It asks for your Vikunja URL and token, verifies them against `/api/v1/user`, lets you pick a default project, and stores the answers in your OS config directory (mode `0600`).
@@ -24,7 +24,7 @@ Runs locally over stdio. No install step — clients launch it with `npx`.
      "mcpServers": {
        "vikunja": {
          "command": "npx",
-         "args": ["-y", "@fswap/mcp-vikunja"]
+         "args": ["-y", "@fswap/mcp-vikunja@latest"]
        }
      }
    }
@@ -35,13 +35,13 @@ Runs locally over stdio. No install step — clients launch it with `npx`.
    ```toml
    [mcp_servers.vikunja]
    command = "npx"
-   args = ["-y", "@fswap/mcp-vikunja"]
+   args = ["-y", "@fswap/mcp-vikunja@latest"]
    ```
 
    **Claude Code**:
 
    ```bash
-   claude mcp add vikunja -- npx -y @fswap/mcp-vikunja
+   claude mcp add vikunja -- npx -y @fswap/mcp-vikunja@latest
    ```
 
 ### Without `setup` (environment variables)
@@ -53,7 +53,7 @@ Environment variables take precedence over the config file, so you can skip `set
   "mcpServers": {
     "vikunja": {
       "command": "npx",
-      "args": ["-y", "@fswap/mcp-vikunja"],
+      "args": ["-y", "@fswap/mcp-vikunja@latest"],
       "env": {
         "VIKUNJA_URL": "https://try.vikunja.io",
         "VIKUNJA_API_TOKEN": "tk_..."
@@ -68,7 +68,7 @@ Codex equivalent:
 ```toml
 [mcp_servers.vikunja]
 command = "npx"
-args = ["-y", "@fswap/mcp-vikunja"]
+args = ["-y", "@fswap/mcp-vikunja@latest"]
 [mcp_servers.vikunja.env]
 VIKUNJA_URL = "https://try.vikunja.io"
 VIKUNJA_API_TOKEN = "tk_..."
@@ -118,7 +118,7 @@ Never write to stdout from server code — it is the protocol channel. Use `cons
 ## Reset
 
 ```bash
-npx -y @fswap/mcp-vikunja setup --reset
+npx -y @fswap/mcp-vikunja@latest setup --reset
 ```
 
 ## License
