@@ -15,16 +15,30 @@ export interface Project {
   updated?: string;
 }
 
-export function summarizeProject(p: Project) {
+export function summarizeProject(p: Project, base: string) {
   return {
     id: p.id,
     title: p.title,
+    url: `${base}/projects/${p.id}`,
     description: p.description || null,
     identifier: p.identifier || null,
     parentProjectId: p.parent_project_id || null,
     archived: Boolean(p.is_archived),
     favorite: Boolean(p.is_favorite),
   };
+}
+
+let frontendBase: string | null = null;
+
+async function frontendUrl(vikunja: VikunjaClient): Promise<string> {
+  if (frontendBase) return frontendBase;
+  try {
+    const info = await vikunja.get<{ frontend_url?: string }>("/info");
+    frontendBase = (info.frontend_url || vikunja.baseUrl).replace(/\/+$/, "");
+  } catch {
+    frontendBase = vikunja.baseUrl;
+  }
+  return frontendBase;
 }
 
 export function registerProjectTools(server: McpServer, vikunja: VikunjaClient): void {
@@ -49,7 +63,8 @@ export function registerProjectTools(server: McpServer, vikunja: VikunjaClient):
         page,
         per_page: perPage,
       });
-      return ok(data.map(summarizeProject));
+      const base = await frontendUrl(vikunja);
+      return ok(data.map((p) => summarizeProject(p, base)));
     }),
   );
 
@@ -62,7 +77,7 @@ export function registerProjectTools(server: McpServer, vikunja: VikunjaClient):
     },
     guard(async ({ id }) => {
       const data = await vikunja.get<Project>(`/projects/${id}`);
-      return ok(summarizeProject(data));
+      return ok(summarizeProject(data, await frontendUrl(vikunja)));
     }),
   );
 
@@ -82,7 +97,7 @@ export function registerProjectTools(server: McpServer, vikunja: VikunjaClient):
       if (description !== undefined) body.description = description;
       if (parentProjectId !== undefined) body.parent_project_id = parentProjectId;
       const data = await vikunja.put<Project>("/projects", body);
-      return ok(summarizeProject(data));
+      return ok(summarizeProject(data, await frontendUrl(vikunja)));
     }),
   );
 }

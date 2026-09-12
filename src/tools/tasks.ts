@@ -37,10 +37,25 @@ export interface Task {
   bucket_id?: number;
 }
 
-function summarizeTask(t: Task) {
+let frontendBase: string | null = null;
+
+/** Resolve the web UI base URL once (Vikunja's API host may differ from its frontend host). */
+async function frontendUrl(vikunja: VikunjaClient): Promise<string> {
+  if (frontendBase) return frontendBase;
+  try {
+    const info = await vikunja.get<{ frontend_url?: string }>("/info");
+    frontendBase = (info.frontend_url || vikunja.baseUrl).replace(/\/+$/, "");
+  } catch {
+    frontendBase = vikunja.baseUrl;
+  }
+  return frontendBase;
+}
+
+function summarizeTask(t: Task, base: string) {
   return {
     id: t.id,
     title: t.title,
+    url: `${base}/tasks/${t.id}`,
     done: t.done,
     dueDate: normalizeDate(t.due_date),
     priority: t.priority ?? 0,
@@ -52,9 +67,9 @@ function summarizeTask(t: Task) {
   };
 }
 
-function fullTask(t: Task) {
+function fullTask(t: Task, base: string) {
   return {
-    ...summarizeTask(t),
+    ...summarizeTask(t, base),
     description: t.description || "",
     doneAt: normalizeDate(t.done_at),
     startDate: normalizeDate(t.start_date),
@@ -100,7 +115,7 @@ export function registerTaskTools(
       title: "List tasks",
       description:
         "List tasks, across all projects or within one project. Returns id, title, done, due date, priority, label " +
-        "names and assignee usernames (no descriptions — use get_task). By default only open tasks are returned. " +
+        "names, assignee usernames and a web url (no descriptions — use get_task). By default only open tasks are returned. " +
         "Set assignedToMe=true for the current user's tasks. For advanced queries pass a raw Vikunja `filter` string " +
         "such as `done = false && due_date < now+7d`, `labels in 3, 5` or `assignees in alice`.",
       inputSchema: {
@@ -137,7 +152,8 @@ export function registerTaskTools(
         page,
         per_page: perPage,
       });
-      return ok(data.map(summarizeTask));
+      const base = await frontendUrl(vikunja);
+      return ok(data.map((t) => summarizeTask(t, base)));
     }),
   );
 
@@ -150,7 +166,7 @@ export function registerTaskTools(
     },
     guard(async ({ id }) => {
       const data = await vikunja.get<Task>(`/tasks/${id}`);
-      return ok(fullTask(data));
+      return ok(fullTask(data, await frontendUrl(vikunja)));
     }),
   );
 
@@ -189,7 +205,7 @@ export function registerTaskTools(
         await setLabels(vikunja, task.id, labelIds);
         task = await vikunja.get<Task>(`/tasks/${task.id}`);
       }
-      return ok(fullTask(task));
+      return ok(fullTask(task, await frontendUrl(vikunja)));
     }),
   );
 
@@ -240,7 +256,7 @@ export function registerTaskTools(
         await setLabels(vikunja, id, labelIds);
         task = await vikunja.get<Task>(`/tasks/${id}`);
       }
-      return ok(fullTask(task));
+      return ok(fullTask(task, await frontendUrl(vikunja)));
     }),
   );
 
@@ -257,7 +273,7 @@ export function registerTaskTools(
     guard(async ({ id, done }) => {
       const current = await vikunja.get<Task>(`/tasks/${id}`);
       const task = await vikunja.post<Task>(`/tasks/${id}`, { ...current, done });
-      return ok(summarizeTask(task));
+      return ok(summarizeTask(task, await frontendUrl(vikunja)));
     }),
   );
 

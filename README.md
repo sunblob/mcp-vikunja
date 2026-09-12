@@ -97,7 +97,7 @@ VIKUNJA_API_TOKEN = "tk_..."
 | `create_label` | `PUT /labels` | |
 | `delete_task` | `DELETE /tasks/{id}` | only when delete is allowed (setup answer or `VIKUNJA_ALLOW_DELETE=true`) |
 
-Vikunja's zero date (`0001-01-01T00:00:00Z`) is normalised to `null` in every response. API errors are returned to the model as `isError` results rather than crashing the server.
+Every task and project includes a `url` to its page in the Vikunja web UI (taken from `/info` `frontend_url`). Vikunja's zero date (`0001-01-01T00:00:00Z`) is normalised to `null` in every response. API errors are returned to the model as `isError` results rather than crashing the server.
 
 ## Development
 
