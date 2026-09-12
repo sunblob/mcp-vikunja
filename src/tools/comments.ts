@@ -19,7 +19,8 @@ export function summarizeComment(c: Comment) {
     comment: c.comment,
     reactions: summarizeReactions(c.reactions),
     created: c.created,
-    edited: c.updated && c.updated !== c.created ? c.updated : null,
+    // Fresh comments come back with created/updated a few nanoseconds apart.
+    edited: c.updated && c.created && Date.parse(c.updated) - Date.parse(c.created) > 1000 ? c.updated : null,
   };
 }
 
