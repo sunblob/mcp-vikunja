@@ -8,13 +8,21 @@ export const ENV_ALLOW_DELETE = "VIKUNJA_ALLOW_DELETE";
 /** Env vars the user still has to provide because they were skipped in setup. */
 export type MissingEnv = Partial<Record<typeof ENV_URL | typeof ENV_TOKEN, string>>;
 
-function jsonSnippet(missing: MissingEnv): string {
-  const server: Record<string, unknown> = { command: "npx", args: ["-y", `${PACKAGE_NAME}@latest`] };
+export const SERVER_COMMAND = "npx";
+export const SERVER_ARGS = ["-y", `${PACKAGE_NAME}@latest`];
+
+/** The `mcpServers.<key>` value used by JSON-configured clients. */
+export function serverEntry(missing: MissingEnv): Record<string, unknown> {
+  const server: Record<string, unknown> = { command: SERVER_COMMAND, args: SERVER_ARGS };
   if (Object.keys(missing).length > 0) server.env = missing;
-  return JSON.stringify({ mcpServers: { [SERVER_KEY]: server } }, null, 2);
+  return server;
 }
 
-function tomlSnippet(missing: MissingEnv): string {
+function jsonSnippet(missing: MissingEnv): string {
+  return JSON.stringify({ mcpServers: { [SERVER_KEY]: serverEntry(missing) } }, null, 2);
+}
+
+export function tomlSnippet(missing: MissingEnv): string {
   const lines = [`[mcp_servers.${SERVER_KEY}]`, 'command = "npx"', `args = ["-y", "${PACKAGE_NAME}@latest"]`];
   if (Object.keys(missing).length > 0) {
     lines.push(`[mcp_servers.${SERVER_KEY}.env]`);

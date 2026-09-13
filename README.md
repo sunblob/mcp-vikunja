@@ -15,7 +15,9 @@ Runs locally over stdio. No install step — clients launch it with `npx`.
 
    It asks for your Vikunja URL and token, verifies them against `/api/v1/user`, lets you pick a default project, and stores the answers in your OS config directory (mode `0600`).
 
-3. Add the server to your client. Every value asked in `setup` can be skipped with Enter; anything you skip goes into the `env` block shown below instead. `setup --print` shows these snippets again at any time.
+3. Add the server to your client. At the end, `setup` offers to do this for you in Claude Code, Claude Desktop, Cursor and Codex: clients it finds are pre-selected (except Claude Code when Claude Desktop is installed, because the desktop app's Code tab already loads `claude_desktop_config.json`), an existing `vikunja` entry is only replaced after you confirm, and any config file it changes gets a one-time `.bak` copy.
+
+   To add it by hand instead, use the snippets below. Every value asked in `setup` can be skipped with Enter; anything you skip goes into the `env` block instead. `setup --print` shows these snippets again at any time.
 
    **Claude Desktop** (`claude_desktop_config.json`) and **Cursor** (`~/.cursor/mcp.json` or `<project>/.cursor/mcp.json`):
 
